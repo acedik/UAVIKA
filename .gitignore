@@ -1,0 +1,31 @@
+# Python Bytecode and Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.uv-cache/
+.pytest_cache/
+
+# Large Datasets (Multi-Gigabyte Video/Image Datasets)
+dataset/
+processed/
+
+# Output directories & Temporary Dumps
+runs/
+test_results/
+reports/
+uav_dilated_yolo/runs/
+
+# Weight Backups & Intermediates (Preserve primary production models only)
+*_backup.pth
+*_baseline.pth
+*pre_ground*.pth
+*pre_mosq*.pth
+*4class_orig*.pth
+last_uav_dilated.pth
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

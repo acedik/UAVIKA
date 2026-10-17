@@ -1,0 +1,46 @@
+# =========================================================
+# Dilated-UAVNet Configuration File
+# Anti-UAV Aerial Detection System
+# =========================================================
+
+data:
+  dataset_dir: "D:/UAVIKA/processed/yolo_multiclass"
+  train_images: "images/train"
+  train_labels: "labels/train"
+  val_images: "images/val"
+  val_labels: "labels/val"
+  num_classes: 4
+  class_names:
+    0: "bird"
+    1: "drone"
+    2: "helicopter"
+    3: "mosquito"
+
+model:
+  name: "DilatedUAVNet"
+  input_size: 640            # Input spatial resolution (640x640)
+  in_channels: 3             # RGB / Multi-spectral (infrared or visible)
+  backbone_channels: [32, 64, 128, 256] # Features at P2, P3, P4, P5
+  neck_channels: 96          # Neck channel dimension optimized for RTX 2050 VRAM
+  strides: [4, 8, 16, 32]    # Multi-scale detection strides (P2=4, P3=8, P4=16, P5=32)
+  dilations: [1, 2, 4]       # Hybrid Dilated Convolution (HDC) rates
+
+train:
+  epochs: 5                  # Stage 1: 5 epochs (inspect after 5, then continue up to 20)
+  batch_size: 8              # Tuned for NVIDIA RTX 2050 (4GB VRAM)
+  learning_rate: 0.001       # Initial LR with AdamW optimizer
+  min_lr: 0.00001            # Cosine annealing minimum LR
+  weight_decay: 0.0005
+  warmup_epochs: 1
+  amp: true                  # PyTorch AMP (Automatic Mixed Precision - FP16)
+  device: "cuda:0"
+  num_workers: 0
+  save_dir: "weights"
+  checkpoint_name: "best_uav_dilated_multiclass.pth"
+  save_interval: 5
+
+eval:
+  conf_threshold: 0.25
+  iou_threshold: 0.45
+  max_detections: 50
+
