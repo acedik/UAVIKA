@@ -17,7 +17,7 @@ def parse_args():
     parser.add_argument(
         "--weights",
         type=str,
-        default=str(Path(__file__).parent / "weights" / "best_uav_dilated.pth"),
+        default=str(Path(__file__).parent / "weights" / "best_uav_dilated_multiclass.pth"),
         help="Path to trained model weights"
     )
     parser.add_argument(

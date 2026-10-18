@@ -42,6 +42,13 @@ def parse_args():
         default=False,
         help="Display bounding boxes for neutral background clutter ('other')"
     )
+    parser.add_argument(
+        "--no-tta",
+        dest="enable_tta",
+        action="store_false",
+        default=True,
+        help="Disable multi-angle Test-Time Augmentation (TTA)"
+    )
     return parser.parse_args()
 
 
@@ -79,6 +86,7 @@ def main():
         max_det=args.max_det,
         enable_saliency=args.enable_saliency,
         show_other=args.show_other,
+        enable_tta=args.enable_tta,
     )
     classes = set(system.classes)
     if not {"drone", "bird", "helicopter"}.issubset(classes):
@@ -87,7 +95,15 @@ def main():
     cap = open_camera(args.camera)
     if cap is None:
         print(f"[ERROR] Could not open webcam index {args.camera}.")
-        return 1
+        if args.camera != 0:
+            print("[INFO] Checking for default camera at index 0...")
+            cap = open_camera(0)
+            if cap is not None:
+                args.camera = 0
+                print("[SUCCESS] Successfully connected to default camera index 0.")
+        if cap is None:
+            print("[ERROR] No working webcam found. Please verify camera permissions and connection.")
+            return 1
 
     window = "Anti-UAV Live Detection"
     print(f"[ACTIVE] Camera {args.camera}; classes: {', '.join(system.classes)}")

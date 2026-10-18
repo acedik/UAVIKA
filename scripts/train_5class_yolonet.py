@@ -150,7 +150,8 @@ def get_data_loaders(data_dir, batch_size):
     train_transform = transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(degrees=15),
+        transforms.RandomVerticalFlip(p=0.5),
+        transforms.RandomRotation(degrees=90),
         transforms.RandomAffine(degrees=0, translate=(0.10, 0.10), scale=(0.85, 1.15)),
         transforms.ColorJitter(brightness=0.20, contrast=0.20, saturation=0.20, hue=0.05),
         transforms.ToTensor(),

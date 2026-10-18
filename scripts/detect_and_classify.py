@@ -140,8 +140,8 @@ def parse_args():
     parser.add_argument(
         "--enable-saliency",
         action="store_true",
-        default=True,
-        help="Enable edge/contour saliency proposals as fallback for close-up/challenging targets (default: True)"
+        default=False,
+        help="Enable edge/contour saliency proposals as fallback for close-up/challenging targets (default: False)"
     )
     parser.add_argument(
         "--no-saliency",
@@ -154,6 +154,13 @@ def parse_args():
         action="store_true",
         default=False,
         help="Display bounding boxes for neutral background clutter ('other')"
+    )
+    parser.add_argument(
+        "--no-tta",
+        dest="enable_tta",
+        action="store_false",
+        default=True,
+        help="Disable multi-angle Test-Time Augmentation (TTA)"
     )
     return parser.parse_args()
 
@@ -183,7 +190,7 @@ class MultiTargetAirDefenseSystem:
     def __init__(self, detector_path, classifier_path, conf_thresh=0.02, min_conf=0.25, iou_thresh=0.45,
                  mosquito_frame_threshold=None, mosquito_cand_threshold=0.70, drone_threshold=0.50,
                  heli_threshold=0.70, multi_zoom=True, zoom_threshold=0.70, max_det=100,
-                 enable_saliency=True, show_other=False):
+                 enable_saliency=False, show_other=False, enable_tta=True):
         self.conf_thresh = conf_thresh
         self.min_conf = min_conf
         self.iou_thresh = iou_thresh
@@ -194,6 +201,7 @@ class MultiTargetAirDefenseSystem:
         self.max_det = max_det
         self.enable_saliency = enable_saliency
         self.show_other = show_other
+        self.enable_tta = enable_tta
         self.mosquito_cand_threshold = mosquito_cand_threshold
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -203,7 +211,7 @@ class MultiTargetAirDefenseSystem:
             self.detector_type = "dilated"
             weights_file = (
                 Path(detector_path) if detector_str.endswith(".pth")
-                else Path(__file__).resolve().parent.parent / "uav_dilated_yolo" / "weights" / "best_uav_dilated.pth"
+                else Path(__file__).resolve().parent.parent / "uav_dilated_yolo" / "weights" / "best_uav_dilated_multiclass.pth"
             )
             cfg_file = Path(__file__).resolve().parent.parent / "uav_dilated_yolo" / "configs" / "config.yaml"
             print(f"[SYSTEM INITIALIZING] Loading Dilated-UAVNet CNN Locator: {weights_file}")
@@ -247,8 +255,68 @@ class MultiTargetAirDefenseSystem:
 
         self.font = cv2.FONT_HERSHEY_SIMPLEX
 
+    @staticmethod
+    def _get_rotated_crop(img, angle):
+        h, w = img.shape[:2]
+        M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+        return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+
+    def _classify_bgr_tta(self, image_bgr):
+        """
+        Batched Multi-Angle Test-Time Augmentation (TTA).
+        Evaluates 7 orthogonal and diagonal orientations in a single parallel GPU forward pass:
+        1. Upright base view (0 deg)
+        2. Horizontal flip
+        3. 90 deg clockwise (vertical side view)
+        4. 90 deg counter-clockwise
+        5. 180 deg inverted (upside down)
+        6. +45 deg diagonal bank
+        7. -45 deg diagonal bank
+        Provides complete 360-degree rotation invariance for banking, diving, and inverted drones.
+        """
+        h, w = image_bgr.shape[:2]
+        # For tiny distant specks (<20px), only evaluate base and horizontal flip
+        # (prevents rotation interpolation artifacts on distant flock birds)
+        if h < 20 or w < 20:
+            views = [image_bgr, cv2.flip(image_bgr, 1)]
+        else:
+            views = [
+                image_bgr,
+                cv2.flip(image_bgr, 1),
+                cv2.rotate(image_bgr, cv2.ROTATE_90_CLOCKWISE),
+                cv2.rotate(image_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE),
+                cv2.rotate(image_bgr, cv2.ROTATE_180),
+                self._get_rotated_crop(image_bgr, 45),
+                self._get_rotated_crop(image_bgr, -45)
+            ]
+
+        tensors = [self.transform(Image.fromarray(cv2.cvtColor(v, cv2.COLOR_BGR2RGB))) for v in views]
+        batch_t = torch.stack(tensors).to(self.device)
+        with torch.inference_mode():
+            logits = self.classifier(batch_t)
+            all_probs = F.softmax(logits, dim=1).cpu().numpy()
+
+        drone_idx = self.classes.index("drone") if "drone" in self.classes else -1
+        bird_idx = self.classes.index("bird") if "bird" in self.classes else -1
+
+        # If any canonical or diagonal view detects an authentic drone signature (>= 0.82)
+        # that decisively exceeds bird probability, lock the canonical orientation
+        if drone_idx >= 0 and len(views) > 2:
+            best_drone_view = int(np.argmax(all_probs[:, drone_idx]))
+            best_drone_p = float(all_probs[best_drone_view][drone_idx])
+            base_bird_p = float(all_probs[best_drone_view][bird_idx]) if bird_idx >= 0 else 0.0
+
+            if best_drone_p >= 0.82 and best_drone_p > (base_bird_p + 0.35):
+                return all_probs[best_drone_view]
+
+        # Standard baseline consensus (average of upright and horizontal flip)
+        return (all_probs[0] + all_probs[1]) / 2.0
+
     def _classify_bgr(self, image_bgr):
         """Apply the same RGB, resize, and normalization path used in training."""
+        if self.enable_tta:
+            return self._classify_bgr_tta(image_bgr)
+
         pil_im = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
         inp = self.transform(pil_im).unsqueeze(0).to(self.device)
         with torch.inference_mode():
@@ -543,9 +611,12 @@ class MultiTargetAirDefenseSystem:
                         if bw >= 6 and bh >= 6 and aspect <= 2.6:
                             if bw * bh > 100000 and float(d[4].item()) < 0.15:
                                 continue
+                            cls_id = int(d[5].item()) if d.shape[0] > 5 else 1
+                            cls_names = self.dilated_cfg.get("data", {}).get("class_names", {})
+                            det_cls = cls_names.get(cls_id, cls_names.get(str(cls_id), "drone"))
                             candidate_boxes.append({
                                 "box": [x1, y1, x2, y2],
-                                "detector_cls": "drone",
+                                "detector_cls": det_cls,
                                 "detector_conf": float(d[4].item())
                             })
             else:
@@ -937,6 +1008,7 @@ def run():
         max_det=args.max_det,
         enable_saliency=args.enable_saliency,
         show_other=args.show_other,
+        enable_tta=args.enable_tta,
     )
 
     out_dir = Path(args.output) / datetime.now().strftime("multi_detect_%Y%m%d_%H%M%S")
